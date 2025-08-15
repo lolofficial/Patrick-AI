@@ -1,7 +1,7 @@
 import React from "react";
-import { Button } from "../components/ui/button";
-import { ScrollArea } from "../components/ui/scroll-area";
-import { Separator } from "../components/ui/separator";
+import { Button } from "./ui/button";
+import { ScrollArea } from "./ui/scroll-area";
+import { Separator } from "./ui/separator";
 import { Plus, Trash2, MessageSquare } from "lucide-react";
 
 function formatTime(ts) {
