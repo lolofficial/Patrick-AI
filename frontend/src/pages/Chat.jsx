@@ -3,7 +3,6 @@ import Sidebar from "../components/Sidebar";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { Separator } from "../components/ui/separator";
 import { ScrollArea } from "../components/ui/scroll-area";
 import { useToast } from "../hooks/use-toast";
 import { Copy, Send, Menu, RefreshCw, Bot, User, MoreVertical } from "lucide-react";
