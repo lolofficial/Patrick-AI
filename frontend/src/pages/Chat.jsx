@@ -6,17 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { ScrollArea } from "../components/ui/scroll-area";
 import { useToast } from "../hooks/use-toast";
 import { Copy, Send, Menu, RefreshCw, Bot, User, MoreVertical } from "lucide-react";
-import {
-  createNewSession,
-  defaultModels,
-  deleteSessionById,
-  getActiveSessionId,
-  loadSessions,
-  mockStreamResponse,
-  saveSessions,
-  setActiveSessionId,
-  upsertSession,
-} from "../mock";
+import { SessionsAPI, ChatAPI } from "../lib/api";
+import { defaultModels } from "../mock";
 
 function Avatar({ role }) {
   return (
@@ -48,9 +39,10 @@ function ChatBubble({ msg, onCopy }) {
 
 export default function Chat() {
   const { toast } = useToast();
-  const [sessions, setSessions] = useState(() => loadSessions());
-  const [activeId, setActiveId] = useState(() => getActiveSessionId() || sessions[0]?.id || null);
+  const [sessions, setSessions] = useState([]);
+  const [activeId, setActiveId] = useState(null);
   const active = useMemo(() => sessions.find((s) => s.id === activeId) || null, [sessions, activeId]);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [aborter, setAborter] = useState(null);
@@ -58,89 +50,120 @@ export default function Chat() {
   const textareaRef = useRef(null);
 
   useEffect(() => {
-    if (!activeId && sessions.length === 0) {
-      const first = createNewSession();
-      const next = upsertSession([], first);
-      setSessions(next);
-      setActiveId(first.id);
-      setActiveSessionId(first.id);
-      saveSessions(next);
-    }
+    (async () => {
+      try {
+        const list = await SessionsAPI.list();
+        if (!list.length) {
+          const created = await SessionsAPI.create({});
+          setSessions([created]);
+          setActiveId(created.id);
+          setMessages([]);
+        } else {
+          setSessions(list);
+          setActiveId(list[0].id);
+          const msgs = await SessionsAPI.messages(list[0].id);
+          setMessages(msgs);
+        }
+      } catch (e) {
+        console.error(e);
+        toast({ title: "Errore nel caricamento delle sessioni" });
+      }
+    })();
   }, []);
 
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
-  }, [active?.messages?.length, isStreaming]);
+  }, [messages.length, isStreaming]);
 
-  function persist(nextSessions) {
-    setSessions(nextSessions);
-    saveSessions(nextSessions);
-  }
-
-  function handleNewChat() {
-    const fresh = createNewSession();
-    const next = upsertSession(sessions, fresh);
-    persist(next);
-    setActiveId(fresh.id);
-    setActiveSessionId(fresh.id);
-    setInput("");
-  }
-
-  function handleSelectSession(id) {
-    setActiveId(id);
-    setActiveSessionId(id);
-  }
-
-  function handleDeleteSession(id) {
-    const next = deleteSessionById(sessions, id);
-    persist(next);
-    if (id === activeId) {
-      const newActive = next[0]?.id || null;
-      setActiveId(newActive);
-      setActiveSessionId(newActive || "");
+  async function reloadMessages(id) {
+    try {
+      const msgs = await SessionsAPI.messages(id);
+      setMessages(msgs);
+    } catch (e) {
+      console.error(e);
     }
   }
 
-  function updateActiveSession(patch) {
+  async function handleNewChat() {
+    try {
+      const created = await SessionsAPI.create({});
+      setSessions((prev) => [created, ...prev]);
+      setActiveId(created.id);
+      setMessages([]);
+    } catch (e) {
+      toast({ title: "Impossibile creare la chat" });
+    }
+  }
+
+  async function handleSelectSession(id) {
+    setActiveId(id);
+    await reloadMessages(id);
+  }
+
+  async function handleDeleteSession(id) {
+    try {
+      await SessionsAPI.remove(id);
+      const next = sessions.filter((s) => s.id !== id);
+      setSessions(next);
+      if (id === activeId) {
+        const newActive = next[0]?.id || null;
+        setActiveId(newActive);
+        if (newActive) await reloadMessages(newActive); else setMessages([]);
+      }
+    } catch (e) {
+      toast({ title: "Impossibile eliminare" });
+    }
+  }
+
+  async function updateActiveSession(patch) {
     if (!active) return;
-    const updated = { ...active, ...patch, updatedAt: new Date().toISOString() };
-    const next = upsertSession(sessions, updated);
-    persist(next);
+    try {
+      const updated = await SessionsAPI.update(active.id, patch);
+      setSessions((prev) => {
+        const idx = prev.findIndex((s) => s.id === updated.id);
+        if (idx === -1) return [updated, ...prev];
+        const copy = [...prev];
+        copy[idx] = updated;
+        // mostra più recente in alto
+        return [copy[idx], ...copy.filter((_, i) => i !== idx)];
+      });
+    } catch (e) {
+      console.error(e);
+    }
   }
 
   async function sendMessage() {
     const trimmed = input.trim();
     if (!trimmed || !active || isStreaming) return;
 
-    // push user message
-    const userMsg = { id: crypto.randomUUID(), role: "user", content: trimmed, createdAt: new Date().toISOString() };
-    const assistMsg = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString() };
-    updateActiveSession({ messages: [...active.messages, userMsg, assistMsg] });
+    // Push ottimistico di user + placeholder assistant
+    const userMsg = { id: crypto.randomUUID(), sessionId: active.id, role: "user", content: trimmed, createdAt: new Date().toISOString() };
+    const assistMsg = { id: crypto.randomUUID(), sessionId: active.id, role: "assistant", content: "", createdAt: new Date().toISOString() };
+    setMessages((prev) => [...prev, userMsg, assistMsg]);
     setInput("");
     textareaRef.current?.focus();
 
-    // stream assistant
     const controller = new AbortController();
     setAborter(controller);
     setIsStreaming(true);
 
     try {
-      for await (const chunk of mockStreamResponse(trimmed, active.model, { signal: controller.signal })) {
-        // update last message content
-        const cur = sessions.find((s) => s.id === active.id) || active; // ensure up-to-date reference
-        const msgs = cur.messages.map((m) => (m.id === assistMsg.id ? { ...m, content: chunk } : m));
-        const patched = { ...cur, messages: msgs };
-        const next = upsertSession(sessions, patched);
-        setSessions(next);
+      for await (const evt of ChatAPI.stream({ sessionId: active.id, model: active.model, messages: [...messages, userMsg] }, { signal: controller.signal })) {
+        if (evt.type === 'chunk') {
+          setMessages((prev) => prev.map((m) => (m.id === assistMsg.id ? { ...m, content: evt.delta } : m)));
+        } else if (evt.type === 'end') {
+          // ricarica per riflettere i dati persistiti
+          await reloadMessages(active.id);
+        }
       }
+    } catch (e) {
+      console.error(e);
+      toast({ title: "Errore durante lo streaming" });
     } finally {
       setIsStreaming(false);
       setAborter(null);
-      // ensure saved
-      const cur = sessions.find((s) => s.id === active.id) || active;
-      saveSessions(upsertSession(sessions, cur));
     }
   }
 
@@ -149,8 +172,7 @@ export default function Chat() {
   }
 
   function regenerateLast() {
-    if (!active) return;
-    const lastUser = [...active.messages].reverse().find((m) => m.role === "user");
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (!lastUser) return;
     setInput(lastUser.content);
     setTimeout(() => sendMessage(), 0);
@@ -213,7 +235,7 @@ export default function Chat() {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="secondary" size="sm" onClick={regenerateLast} disabled={!active?.messages?.length || isStreaming}>
+            <Button variant="secondary" size="sm" onClick={regenerateLast} disabled={!messages.length || isStreaming}>
               <RefreshCw className="h-4 w-4 mr-1" /> Rigenera
             </Button>
             <Button variant="ghost" size="icon">
@@ -225,12 +247,12 @@ export default function Chat() {
         {/* Messages */}
         <ScrollArea ref={listRef} className="flex-1 px-4">
           <div className="max-w-3xl mx-auto py-6 space-y-6">
-            {(!active || active.messages.length === 0) && (
+            {(!active || messages.length === 0) && (
               <div className="text-center text-muted-foreground py-16">
                 Inizia una conversazione con il tuo ChatGPT locale.
               </div>
             )}
-            {active?.messages?.map((m) => (
+            {messages.map((m) => (
               <ChatBubble key={m.id} msg={m} onCopy={handleCopy} />
             ))}
           </div>
@@ -262,7 +284,7 @@ export default function Chat() {
               </div>
             </div>
             <div className="text-[11px] text-muted-foreground mt-2">
-              Questo è un mock frontend. Nessuna richiesta viene inviata a modelli reali.
+              Per ora lo streaming è mock lato server. Possiamo collegare un LLM reale appena ci fornisci la chiave.
             </div>
           </div>
         </div>
