@@ -207,7 +207,7 @@ async def chat_stream(input: ChatStreamInput, request: Request):
             async for partial in mock_llm_stream(prompt or ""):
                 if await request.is_disconnected():
                     break
-                yield f"data: {{\"type\": \"chunk\", \"delta\": {partial!r} }}\n\n"
+                yield f"data: {{\"type\": \"chunk\", \"delta\": {json.dumps(partial)} }}\n\n"
             # Alla fine, salva il messaggio assistant completo
             assistant_msg = MessageModel(sessionId=input.sessionId, role="assistant", content=partial)
             await db.messages.insert_one(_message_to_doc(assistant_msg))
