@@ -167,7 +167,8 @@ async def get_messages(session_id: str = Path(...)):
     return [_doc_to_message(d) for d in docs]
 
 # --------- LLM integration helpers ---------
-async def mock_llm_stream(prompt: str) -> AsyncGenerator[str, None]:
+async def mock_llm_stream_delta(prompt: str) -> AsyncGenerator[str, None]:
+    """Yield piccoli delta (parole) come streaming mock."""
     canned = [
         "Certo! Ti aiuto volentieri. Ecco una spiegazione semplice e diretta.",
         "Ottima domanda. Possiamo affrontarla passo dopo passo.",
@@ -179,19 +180,16 @@ async def mock_llm_stream(prompt: str) -> AsyncGenerator[str, None]:
     base = random.choice(canned)
     topic = (prompt or "la tua richiesta")[:60]
     full = f"{base}\n\nRiferimento al tema: \"{topic}\".\n\nNota: questa è una risposta mock dal server."
-    words = full.split(" ")
-    chunk = ""
-    for i, w in enumerate(words):
-        chunk = ("" if i == 0 else chunk + " ") + w
-        await asyncio.sleep(0.05)
-        yield chunk
+    for w in full.split(" "):
+        yield (w + " ")
+        await asyncio.sleep(0.03)
 
-async def openai_chat_complete(messages: List[dict], model: str, temperature: float = 0.3) -> str:
+async def openai_chat_stream_delta(messages: List[dict], model: str, temperature: float = 0.3) -> AsyncGenerator[str, None]:
+    """Chiama OpenAI con stream=true e produce delta di testo (token/word)."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not configured")
 
-    # Basic model mapping to avoid unsupported names
     model_map = {"gpt-4o": "gpt-4o", "gpt-4o-mini": "gpt-4o-mini"}
     model = model_map.get(model, "gpt-4o-mini")
 
@@ -204,24 +202,38 @@ async def openai_chat_complete(messages: List[dict], model: str, temperature: fl
         "model": model,
         "messages": messages,
         "temperature": temperature,
-        "stream": False,
+        "stream": True,
     }
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as resp:
         if resp.status_code != 200:
-            logging.error("OpenAI error %s: %s", resp.status_code, resp.text)
+            text = resp.text[:500]
+            logging.error("OpenAI stream error %s: %s", resp.status_code, text)
             raise RuntimeError(f"OpenAI API error {resp.status_code}")
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        return content
-    except Exception as e:
-        logging.exception("OpenAI request failed")
-        raise
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if raw_line is None:
+                continue
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("data:"):
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    j = json.loads(data)
+                except Exception:
+                    continue
+                try:
+                    delta = j["choices"][0]["delta"].get("content")
+                except Exception:
+                    delta = None
+                if delta:
+                    yield delta
 
-# --------- SSE Chat (real via OpenAI if key, else mock) ---------
+# --------- SSE Chat (token-by-token) ---------
 @api_router.post("/chat/stream")
 async def chat_stream(input: ChatStreamInput, request: Request):
-    # Estrarre ultimo messaggio utente e history
+    # Costruisci history
     in_msgs = []
     for m in input.messages:
         if isinstance(m, dict):
@@ -234,7 +246,7 @@ async def chat_stream(input: ChatStreamInput, request: Request):
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Salva il messaggio utente
+    # Salva il messaggio utente (ultimo user)
     last_user_content = next((m["content"] for m in reversed(in_msgs) if m["role"] == "user"), "")
     user_msg = MessageModel(sessionId=input.sessionId, role="user", content=last_user_content)
     await db.messages.insert_one(_message_to_doc(user_msg))
@@ -243,28 +255,20 @@ async def chat_stream(input: ChatStreamInput, request: Request):
         full_answer = ""
         try:
             api_key = os.environ.get("OPENAI_API_KEY")
+            delta_stream: AsyncGenerator[str, None]
             if api_key:
-                # Chiamata non-stream a OpenAI per ottenere risposta completa
-                full_answer_local = await asyncio.to_thread(openai_chat_complete, in_msgs, input.model, input.temperature or 0.3)
+                delta_stream = openai_chat_stream_delta(in_msgs, input.model, input.temperature or 0.3)
             else:
-                # fallback mock
-                chunks = []
-                async for partial in mock_llm_stream(last_user_content):
-                    chunks.append(partial)
-                full_answer_local = chunks[-1] if chunks else ""
+                delta_stream = mock_llm_stream_delta(last_user_content)
 
-            # Esegui streaming simulando chunk dalla risposta reale
-            words = full_answer_local.split(" ")
-            acc = ""
-            for i, w in enumerate(words):
+            async for piece in delta_stream:
                 if await request.is_disconnected():
                     break
-                acc = ("" if i == 0 else acc + " ") + w
-                yield f"data: {{\"type\": \"chunk\", \"delta\": {json.dumps(acc)} }}\n\n"
-                await asyncio.sleep(0.02)
-            full_answer = acc
+                full_answer += piece
+                # inviamo solo il delta (token/word) e il client lo appende
+                yield f"data: {{\"type\": \"chunk\", \"delta\": {json.dumps(piece)} }}\n\n"
 
-            # Salva il messaggio assistant completo
+            # Fine: salva messaggio assistant completo
             assistant_msg = MessageModel(sessionId=input.sessionId, role="assistant", content=full_answer)
             await db.messages.insert_one(_message_to_doc(assistant_msg))
             yield f"data: {{\"type\": \"end\", \"messageId\": \"{assistant_msg.id}\"}}\n\n"

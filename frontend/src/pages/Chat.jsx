@@ -126,7 +126,6 @@ export default function Chat() {
         if (idx === -1) return [updated, ...prev];
         const copy = [...prev];
         copy[idx] = updated;
-        // mostra più recente in alto
         return [copy[idx], ...copy.filter((_, i) => i !== idx)];
       });
     } catch (e) {
@@ -138,7 +137,6 @@ export default function Chat() {
     const trimmed = input.trim();
     if (!trimmed || !active || isStreaming) return;
 
-    // Push ottimistico di user + placeholder assistant
     const userMsg = { id: crypto.randomUUID(), sessionId: active.id, role: "user", content: trimmed, createdAt: new Date().toISOString() };
     const assistMsg = { id: crypto.randomUUID(), sessionId: active.id, role: "assistant", content: "", createdAt: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg, assistMsg]);
@@ -152,9 +150,9 @@ export default function Chat() {
     try {
       for await (const evt of ChatAPI.stream({ sessionId: active.id, model: active.model, messages: [...messages, userMsg] }, { signal: controller.signal })) {
         if (evt.type === 'chunk') {
-          setMessages((prev) => prev.map((m) => (m.id === assistMsg.id ? { ...m, content: evt.delta } : m)));
+          // Append solo il delta ricevuto
+          setMessages((prev) => prev.map((m) => (m.id === assistMsg.id ? { ...m, content: (m.content || '') + (evt.delta || '') } : m)));
         } else if (evt.type === 'end') {
-          // ricarica per riflettere i dati persistiti
           await reloadMessages(active.id);
         }
       }
@@ -284,7 +282,7 @@ export default function Chat() {
               </div>
             </div>
             <div className="text-[11px] text-muted-foreground mt-2">
-              Per ora lo streaming è mock lato server. Possiamo collegare un LLM reale appena ci fornisci la chiave.
+              Streaming token-by-token attivo.
             </div>
           </div>
         </div>
