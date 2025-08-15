@@ -9,9 +9,10 @@ from pathlib import Path as Pathlib
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, AsyncGenerator
 import uuid
-import json
 from datetime import datetime
 import asyncio
+import json
+import requests
 
 ROOT_DIR = Pathlib(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -165,7 +166,7 @@ async def get_messages(session_id: str = Path(...)):
     docs = await db.messages.find({"sessionId": session_id}).sort("createdAt", 1).to_list(1000)
     return [_doc_to_message(d) for d in docs]
 
-# --------- SSE Chat (Mock server-side for now) ---------
+# --------- LLM integration helpers ---------
 async def mock_llm_stream(prompt: str) -> AsyncGenerator[str, None]:
     canned = [
         "Certo! Ti aiuto volentieri. Ecco una spiegazione semplice e diretta.",
@@ -185,12 +186,48 @@ async def mock_llm_stream(prompt: str) -> AsyncGenerator[str, None]:
         await asyncio.sleep(0.05)
         yield chunk
 
+async def openai_chat_complete(messages: List[dict], model: str, temperature: float = 0.3) -> str:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not configured")
+
+    # Basic model mapping to avoid unsupported names
+    model_map = {"gpt-4o": "gpt-4o", "gpt-4o-mini": "gpt-4o-mini"}
+    model = model_map.get(model, "gpt-4o-mini")
+
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        if resp.status_code != 200:
+            logging.error("OpenAI error %s: %s", resp.status_code, resp.text)
+            raise RuntimeError(f"OpenAI API error {resp.status_code}")
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        return content
+    except Exception as e:
+        logging.exception("OpenAI request failed")
+        raise
+
+# --------- SSE Chat (real via OpenAI if key, else mock) ---------
 @api_router.post("/chat/stream")
 async def chat_stream(input: ChatStreamInput, request: Request):
-    # Estrarre ultimo messaggio utente
-    user_msgs = [m for m in input.messages if (m.get("role") if isinstance(m, dict) else m.role) == "user"]
-    last_user = user_msgs[-1] if user_msgs else None
-    prompt = last_user.get("content") if isinstance(last_user, dict) else (last_user.content if last_user else "")
+    # Estrarre ultimo messaggio utente e history
+    in_msgs = []
+    for m in input.messages:
+        if isinstance(m, dict):
+            in_msgs.append({"role": m.get("role"), "content": m.get("content", "")})
+        else:
+            in_msgs.append({"role": m.role, "content": m.content})
 
     # Verifica sessione esistente
     sess = await db.sessions.find_one({"_id": input.sessionId})
@@ -198,23 +235,42 @@ async def chat_stream(input: ChatStreamInput, request: Request):
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Salva il messaggio utente
-    user_msg = MessageModel(sessionId=input.sessionId, role="user", content=prompt or "")
+    last_user_content = next((m["content"] for m in reversed(in_msgs) if m["role"] == "user"), "")
+    user_msg = MessageModel(sessionId=input.sessionId, role="user", content=last_user_content)
     await db.messages.insert_one(_message_to_doc(user_msg))
 
     async def event_gen():
+        full_answer = ""
         try:
-            # Qui in futuro: integrazione provider LLM reale (OpenAI/Anthropic/Gemini)
-            async for partial in mock_llm_stream(prompt or ""):
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if api_key:
+                # Chiamata non-stream a OpenAI per ottenere risposta completa
+                full_answer_local = await asyncio.to_thread(openai_chat_complete, in_msgs, input.model, input.temperature or 0.3)
+            else:
+                # fallback mock
+                chunks = []
+                async for partial in mock_llm_stream(last_user_content):
+                    chunks.append(partial)
+                full_answer_local = chunks[-1] if chunks else ""
+
+            # Esegui streaming simulando chunk dalla risposta reale
+            words = full_answer_local.split(" ")
+            acc = ""
+            for i, w in enumerate(words):
                 if await request.is_disconnected():
                     break
-                yield f"data: {{\"type\": \"chunk\", \"delta\": {json.dumps(partial)} }}\n\n"
-            # Alla fine, salva il messaggio assistant completo
-            assistant_msg = MessageModel(sessionId=input.sessionId, role="assistant", content=partial)
+                acc = ("" if i == 0 else acc + " ") + w
+                yield f"data: {{\"type\": \"chunk\", \"delta\": {json.dumps(acc)} }}\n\n"
+                await asyncio.sleep(0.02)
+            full_answer = acc
+
+            # Salva il messaggio assistant completo
+            assistant_msg = MessageModel(sessionId=input.sessionId, role="assistant", content=full_answer)
             await db.messages.insert_one(_message_to_doc(assistant_msg))
             yield f"data: {{\"type\": \"end\", \"messageId\": \"{assistant_msg.id}\"}}\n\n"
         except Exception as e:
             logging.exception("stream error")
-            yield f"data: {{\"type\": \"error\", \"error\": {str(e)!r} }}\n\n"
+            yield f"data: {{\"type\": \"error\", \"error\": {json.dumps(str(e))} }}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
