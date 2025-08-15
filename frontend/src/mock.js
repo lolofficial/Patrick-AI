@@ -104,7 +104,7 @@ export async function* mockStreamResponse(prompt, model = defaultModels[1].id, {
   const full = synthesizeReply(prompt);
   const words = full.split(" ");
   let chunk = "";
-  for (let i = 0; i &lt; words.length; i++) {
+  for (let i = 0; i < words.length; i++) {
     if (signal?.aborted) {
       return;
     }
