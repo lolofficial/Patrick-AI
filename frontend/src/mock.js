@@ -110,7 +110,7 @@ export async function* mockStreamResponse(prompt, model = defaultModels[1].id, {
     }
     chunk += (i === 0 ? "" : " ") + words[i];
     // simulate variable network/compute delay
-    await new Promise((r) =&gt; setTimeout(r, 30 + Math.random() * 70));
+    await new Promise((r) => setTimeout(r, 30 + Math.random() * 70));
     yield chunk;
   }
 }
