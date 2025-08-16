@@ -7,7 +7,7 @@ import "./index.css";
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return null;
+  if (loading) return <div className="p-6 text-sm text-muted-foreground">Caricamento…</div>;
   if (!user) return <Navigate to="/auth" replace />;
   return children;
 }
