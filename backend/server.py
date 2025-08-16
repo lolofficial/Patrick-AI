@@ -90,6 +90,10 @@ class LoginInput(BaseModel):
     email: EmailStr
     password: str
 
+class AuthResponse(BaseModel):
+    user: UserPublic
+    token: str
+
 # ----------------- Helpers -----------------
 
 def _doc_to_session(doc) -> SessionModel:
@@ -175,7 +179,7 @@ async def root():
     return {"message": "Hello World"}
 
 # Auth endpoints
-@api_router.post("/auth/register", response_model=UserPublic)
+@api_router.post("/auth/register", response_model=AuthResponse)
 async def register(input: RegisterInput):
     existing = await _find_user_by_email(input.email)
     if existing:
@@ -188,15 +192,29 @@ async def register(input: RegisterInput):
         "createdAt": datetime.utcnow(),
     }
     await db.users.insert_one(user_doc)
-    return UserPublic(id=uid, email=input.email, createdAt=user_doc["createdAt"])
+    token = create_access_token(uid)
+    resp_data = AuthResponse(user=UserPublic(id=uid, email=input.email, createdAt=user_doc["createdAt"]), token=token)
+    resp = JSONResponse(jsonable_encoder(resp_data))
+    # set also cookie for same-site scenarios
+    resp.set_cookie(
+        key="access_token",
+        value=f"Bearer {token}",
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return resp
 
-@api_router.post("/auth/login", response_model=UserPublic)
+@api_router.post("/auth/login", response_model=AuthResponse)
 async def login(input: LoginInput):
     user = await _find_user_by_email(input.email)
     if not user or not bcrypt.verify(input.password, user.get("passwordHash", "")):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
     token = create_access_token(user["_id"])
-    resp = JSONResponse(jsonable_encoder(UserPublic(id=user["_id"], email=user["email"], createdAt=user["createdAt"])) )
+    resp_data = AuthResponse(user=UserPublic(id=user["_id"], email=user["email"], createdAt=user["createdAt"]), token=token)
+    resp = JSONResponse(jsonable_encoder(resp_data))
     resp.set_cookie(
         key="access_token",
         value=f"Bearer {token}",
@@ -377,7 +395,6 @@ async def chat_stream(input: ChatStreamInput, request: Request, user: UserPublic
 # Include router
 app.include_router(api_router)
 
-# CORS
 # CORS: se CORS_ORIGINS è "*", per richieste con credenziali usiamo localhost:3000 di default
 cors_env = os.environ.get("CORS_ORIGINS", "*")
 origins = [o.strip() for o in cors_env.split(",") if o.strip()] if cors_env else ["http://localhost:3000"]

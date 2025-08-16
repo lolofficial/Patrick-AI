@@ -22,10 +22,18 @@ export function AuthProvider({ children }) {
     })();
   }, []);
 
+  function setToken(t) {
+    try { localStorage.setItem('auth_token', t); } catch {}
+  }
+  function clearToken() {
+    try { localStorage.removeItem('auth_token'); } catch {}
+  }
+
   async function login(email, password) {
     try {
-      const u = await AuthAPI.login(email, password);
-      setUser(u);
+      const res = await AuthAPI.login(email, password); // { user, token }
+      setToken(res.token);
+      setUser(res.user);
       return true;
     } catch (e) {
       toast({ title: "Login fallito" });
@@ -35,9 +43,10 @@ export function AuthProvider({ children }) {
 
   async function register(email, password) {
     try {
-      await AuthAPI.register(email, password);
-      // auto-login
-      return await login(email, password);
+      const res = await AuthAPI.register(email, password); // { user, token }
+      setToken(res.token);
+      setUser(res.user);
+      return true;
     } catch (e) {
       toast({ title: "Registrazione fallita" });
       return false;
@@ -48,6 +57,7 @@ export function AuthProvider({ children }) {
     try {
       await AuthAPI.logout();
     } catch {}
+    clearToken();
     setUser(null);
   }
 

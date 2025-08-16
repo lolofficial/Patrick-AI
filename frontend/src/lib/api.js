@@ -1,11 +1,20 @@
-// API client centralizzato con credenziali (cookie HttpOnly)
+// API client centralizzato con supporto token (Authorization) e cookie
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || import.meta.env.REACT_APP_BACKEND_URL;
 const API_BASE = `${BACKEND_URL}/api`;
 
 const withCreds = { credentials: 'include' };
 
+function getToken() {
+  try { return localStorage.getItem('auth_token') || null; } catch { return null; }
+}
+
+function authHeaders() {
+  const t = getToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 export async function apiGet(path) {
-  const res = await fetch(`${API_BASE}${path}`, { ...withCreds });
+  const res = await fetch(`${API_BASE}${path}`, { ...withCreds, headers: { ...authHeaders() } });
   if (!res.ok) throw new Error(`GET ${path} ${res.status}`);
   return res.json();
 }
@@ -13,7 +22,7 @@ export async function apiGet(path) {
 export async function apiJson(path, method = 'POST', body) {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body || {}),
     ...withCreds,
   });
@@ -22,7 +31,7 @@ export async function apiJson(path, method = 'POST', body) {
 }
 
 export async function apiDelete(path) {
-  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', ...withCreds });
+  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', ...withCreds, headers: { ...authHeaders() } });
   if (!res.ok) throw new Error(`DELETE ${path} ${res.status}`);
   return true;
 }
@@ -31,7 +40,7 @@ export async function apiDelete(path) {
 export async function* apiSSE(path, body, { signal } = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body || {}),
     signal,
     ...withCreds,
