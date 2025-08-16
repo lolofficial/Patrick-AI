@@ -378,10 +378,15 @@ async def chat_stream(input: ChatStreamInput, request: Request, user: UserPublic
 app.include_router(api_router)
 
 # CORS
+# CORS: se CORS_ORIGINS è "*", per richieste con credenziali usiamo localhost:3000 di default
+cors_env = os.environ.get("CORS_ORIGINS", "*")
+origins = [o.strip() for o in cors_env.split(",") if o.strip()] if cors_env else ["http://localhost:3000"]
+if origins == ["*"]:
+    origins = ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
