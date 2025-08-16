@@ -196,7 +196,7 @@ async def login(input: LoginInput):
     if not user or not bcrypt.verify(input.password, user.get("passwordHash", "")):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
     token = create_access_token(user["_id"])
-    resp = JSONResponse(UserPublic(id=user["_id"], email=user["email"], createdAt=user["createdAt"]).dict())
+    resp = JSONResponse(jsonable_encoder(UserPublic(id=user["_id"], email=user["email"], createdAt=user["createdAt"])) )
     resp.set_cookie(
         key="access_token",
         value=f"Bearer {token}",
