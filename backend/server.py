@@ -15,6 +15,7 @@ import json
 import requests
 from jose import jwt, JWTError
 from passlib.hash import bcrypt
+from fastapi.encoders import jsonable_encoder
 
 ROOT_DIR = Pathlib(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
