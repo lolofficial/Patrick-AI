@@ -40,6 +40,8 @@ function ChatBubble({ msg, onCopy }) {
 }
 
 export default function Chat() {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
