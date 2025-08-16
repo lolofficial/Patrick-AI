@@ -99,4 +99,5 @@ export const AuthAPI = {
   login: (email, password) => apiJson('/auth/login', 'POST', { email, password }),
   register: (email, password) => apiJson('/auth/register', 'POST', { email, password }),
   logout: () => apiJson('/auth/logout', 'POST', {}),
+  changePassword: (currentPassword, newPassword) => apiJson('/auth/change-password', 'POST', { currentPassword, newPassword }),
 };

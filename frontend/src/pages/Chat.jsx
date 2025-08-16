@@ -6,10 +6,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { ScrollArea } from "../components/ui/scroll-area";
 import { useToast } from "../hooks/use-toast";
 import { Copy, Send, Menu, RefreshCw, Bot, User, MoreVertical, LogOut } from "lucide-react";
-import { SessionsAPI, ChatAPI } from "../lib/api";
+import { SessionsAPI, ChatAPI, AuthAPI } from "../lib/api";
 import { defaultModels } from "../mock";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router-dom";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 
 function Avatar({ role }) {
   return (
@@ -40,9 +44,9 @@ function ChatBubble({ msg, onCopy }) {
 }
 
 export default function Chat() {
-  const { logout } = useAuth();
-  const navigate = useNavigate();
   const { toast } = useToast();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const active = useMemo(() => sessions.find((s) => s.id === activeId) || null, [sessions, activeId]);
@@ -50,6 +54,9 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [aborter, setAborter] = useState(null);
+  const [openChangePwd, setOpenChangePwd] = useState(false);
+  const [openProfile, setOpenProfile] = useState(false);
+  const [pwdForm, setPwdForm] = useState({ current: "", next: "", confirm: "" });
   const listRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -154,7 +161,6 @@ export default function Chat() {
     try {
       for await (const evt of ChatAPI.stream({ sessionId: active.id, model: active.model, messages: [...messages, userMsg] }, { signal: controller.signal })) {
         if (evt.type === 'chunk') {
-          // Append solo il delta ricevuto
           setMessages((prev) => prev.map((m) => (m.id === assistMsg.id ? { ...m, content: (m.content || '') + (evt.delta || '') } : m)));
         } else if (evt.type === 'end') {
           await reloadMessages(active.id);
@@ -202,6 +208,26 @@ export default function Chat() {
     }
   }
 
+  async function onChangePassword(e) {
+    e.preventDefault();
+    if (!pwdForm.next || pwdForm.next.length < 6) {
+      toast({ title: "Minimo 6 caratteri" });
+      return;
+    }
+    if (pwdForm.next !== pwdForm.confirm) {
+      toast({ title: "Le password non coincidono" });
+      return;
+    }
+    try {
+      await AuthAPI.changePassword(pwdForm.current, pwdForm.next);
+      toast({ title: "Password aggiornata" });
+      setOpenChangePwd(false);
+      setPwdForm({ current: "", next: "", confirm: "" });
+    } catch (err) {
+      toast({ title: err.message || "Cambio password fallito" });
+    }
+  }
+
   const placeholder = "Invia un messaggio...";
 
   return (
@@ -237,12 +263,23 @@ export default function Chat() {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="secondary" size="sm" onClick={regenerateLast} disabled={!messages.length || isStreaming}>
-              <RefreshCw className="h-4 w-4 mr-1" /> Rigenera
-            </Button>
-            <Button variant="ghost" size="sm" onClick={async () => { await logout(); navigate('/auth', { replace: true }); }}>
-              <LogOut className="h-4 w-4 mr-1" /> Esci
-            </Button>
+
+            {/* Account menu */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="max-w-[200px] truncate">
+                  {user?.email || "Account"}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>{user?.email}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setOpenProfile(true)}>Profilo</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setOpenChangePwd(true)}>Cambia password</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={async () => { await logout(); navigate('/auth', { replace: true }); }}>Esci</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -285,12 +322,48 @@ export default function Chat() {
                 </div>
               </div>
             </div>
-            <div className="text-[11px] text-muted-foreground mt-2">
-              Streaming token-by-token attivo.
-            </div>
           </div>
         </div>
       </main>
+
+      {/* Profile dialog */}
+      <Dialog open={openProfile} onOpenChange={setOpenProfile}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Profilo</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div><span className="text-muted-foreground">Email:</span> {user?.email}</div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Change password dialog */}
+      <Dialog open={openChangePwd} onOpenChange={setOpenChangePwd}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cambia password</DialogTitle>
+          </DialogHeader>
+          <form className="space-y-3" onSubmit={onChangePassword}>
+            <div className="space-y-2">
+              <Label>Password attuale</Label>
+              <Input type="password" value={pwdForm.current} onChange={(e) => setPwdForm({ ...pwdForm, current: e.target.value })} required />
+            </div>
+            <div className="space-y-2">
+              <Label>Nuova password</Label>
+              <Input type="password" value={pwdForm.next} onChange={(e) => setPwdForm({ ...pwdForm, next: e.target.value })} required />
+            </div>
+            <div className="space-y-2">
+              <Label>Conferma nuova password</Label>
+              <Input type="password" value={pwdForm.confirm} onChange={(e) => setPwdForm({ ...pwdForm, confirm: e.target.value })} required />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="secondary" onClick={() => setOpenChangePwd(false)}>Annulla</Button>
+              <Button type="submit">Aggiorna</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
