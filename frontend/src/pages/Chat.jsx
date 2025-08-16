@@ -5,7 +5,7 @@ import { Textarea } from "../components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { ScrollArea } from "../components/ui/scroll-area";
 import { useToast } from "../hooks/use-toast";
-import { Copy, Send, Menu, RefreshCw, Bot, User, MoreVertical } from "lucide-react";
+import { Copy, Send, Menu, RefreshCw, Bot, User, MoreVertical, LogOut } from "lucide-react";
 import { SessionsAPI, ChatAPI } from "../lib/api";
 import { defaultModels } from "../mock";
 
