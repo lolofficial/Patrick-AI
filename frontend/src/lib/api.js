@@ -1,9 +1,11 @@
-// API client centralizzato. Non hardcodare URL: usa REACT_APP_BACKEND_URL
+// API client centralizzato con credenziali (cookie HttpOnly)
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || import.meta.env.REACT_APP_BACKEND_URL;
 const API_BASE = `${BACKEND_URL}/api`;
 
+const withCreds = { credentials: 'include' };
+
 export async function apiGet(path) {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${API_BASE}${path}`, { ...withCreds });
   if (!res.ok) throw new Error(`GET ${path} ${res.status}`);
   return res.json();
 }
@@ -13,13 +15,14 @@ export async function apiJson(path, method = 'POST', body) {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
+    ...withCreds,
   });
   if (!res.ok) throw new Error(`${method} ${path} ${res.status}`);
   return res.json();
 }
 
 export async function apiDelete(path) {
-  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
+  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', ...withCreds });
   if (!res.ok) throw new Error(`DELETE ${path} ${res.status}`);
   return true;
 }
@@ -31,6 +34,7 @@ export async function* apiSSE(path, body, { signal } = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
     signal,
+    ...withCreds,
   });
   if (!res.ok || !res.body) throw new Error(`SSE ${path} ${res.status}`);
   const reader = res.body.getReader();
@@ -64,4 +68,11 @@ export const SessionsAPI = {
 
 export const ChatAPI = {
   stream: (payload, opts) => apiSSE('/chat/stream', payload, opts),
+};
+
+export const AuthAPI = {
+  me: () => apiGet('/auth/me'),
+  login: (email, password) => apiJson('/auth/login', 'POST', { email, password }),
+  register: (email, password) => apiJson('/auth/register', 'POST', { email, password }),
+  logout: () => apiJson('/auth/logout', 'POST', {}),
 };

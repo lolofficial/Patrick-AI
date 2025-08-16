@@ -1,18 +1,20 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Path, Body, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Path, Body, Request, Depends
+from fastapi.responses import StreamingResponse, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path as Pathlib
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal, AsyncGenerator
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import json
 import requests
+from jose import jwt, JWTError
+from passlib.hash import bcrypt
 
 ROOT_DIR = Pathlib(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -28,6 +30,11 @@ app = FastAPI()
 # Router with /api prefix
 api_router = APIRouter(prefix="/api")
 
+# ----------------- Auth Config -----------------
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 giorni
+
 # ----------------- Models -----------------
 class StatusCheck(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -41,6 +48,7 @@ Role = Literal["user", "assistant", "system"]
 
 class SessionModel(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    ownerId: str
     title: str = "Nuova chat"
     model: str = "gpt-4o-mini"
     createdAt: datetime = Field(default_factory=datetime.utcnow)
@@ -56,6 +64,7 @@ class SessionUpdate(BaseModel):
 
 class MessageModel(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    ownerId: str
     sessionId: str
     role: Role
     content: str
@@ -67,11 +76,25 @@ class ChatStreamInput(BaseModel):
     messages: List[MessageModel] | List[dict]
     temperature: Optional[float] = 0.3
 
+class UserPublic(BaseModel):
+    id: str
+    email: EmailStr
+    createdAt: datetime
+
+class RegisterInput(BaseModel):
+    email: EmailStr
+    password: str
+
+class LoginInput(BaseModel):
+    email: EmailStr
+    password: str
+
 # ----------------- Helpers -----------------
 
 def _doc_to_session(doc) -> SessionModel:
     return SessionModel(
         id=doc.get("_id") or doc.get("id"),
+        ownerId=doc.get("ownerId"),
         title=doc.get("title", "Nuova chat"),
         model=doc.get("model", "gpt-4o-mini"),
         createdAt=doc.get("createdAt", datetime.utcnow()),
@@ -82,6 +105,7 @@ def _doc_to_session(doc) -> SessionModel:
 def _session_to_doc(s: SessionModel):
     return {
         "_id": s.id,
+        "ownerId": s.ownerId,
         "title": s.title,
         "model": s.model,
         "createdAt": s.createdAt,
@@ -92,6 +116,7 @@ def _session_to_doc(s: SessionModel):
 def _doc_to_message(doc) -> MessageModel:
     return MessageModel(
         id=doc.get("_id") or doc.get("id"),
+        ownerId=doc.get("ownerId"),
         sessionId=doc["sessionId"],
         role=doc["role"],
         content=doc.get("content", ""),
@@ -102,11 +127,45 @@ def _doc_to_message(doc) -> MessageModel:
 def _message_to_doc(m: MessageModel):
     return {
         "_id": m.id,
+        "ownerId": m.ownerId,
         "sessionId": m.sessionId,
         "role": m.role,
         "content": m.content,
         "createdAt": m.createdAt,
     }
+
+async def _find_user_by_email(email: str):
+    return await db.users.find_one({"email": email})
+
+# ----------------- Auth utils -----------------
+
+def create_access_token(sub: str) -> str:
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode = {"sub": sub, "exp": expire}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+async def get_current_user(request: Request) -> UserPublic:
+    token = None
+    # from cookie
+    cookie = request.cookies.get("access_token")
+    if cookie and cookie.startswith("Bearer "):
+        token = cookie.split(" ", 1)[1]
+    # from header
+    if not token:
+        auth = request.headers.get("Authorization")
+        if auth and auth.startswith("Bearer "):
+            token = auth.split(" ", 1)[1]
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        uid = payload.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user_doc = await db.users.find_one({"_id": uid})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="User not found")
+    return UserPublic(id=user_doc["_id"], email=user_doc["email"], createdAt=user_doc["createdAt"])
 
 # ----------------- Routes -----------------
 
@@ -114,26 +173,60 @@ def _message_to_doc(m: MessageModel):
 async def root():
     return {"message": "Hello World"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_obj = StatusCheck(**input.dict())
-    await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
+# Auth endpoints
+@api_router.post("/auth/register", response_model=UserPublic)
+async def register(input: RegisterInput):
+    existing = await _find_user_by_email(input.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="Email già registrata")
+    uid = str(uuid.uuid4())
+    user_doc = {
+        "_id": uid,
+        "email": input.email,
+        "passwordHash": bcrypt.hash(input.password),
+        "createdAt": datetime.utcnow(),
+    }
+    await db.users.insert_one(user_doc)
+    return UserPublic(id=uid, email=input.email, createdAt=user_doc["createdAt"])
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**sc) for sc in status_checks]
+@api_router.post("/auth/login", response_model=UserPublic)
+async def login(input: LoginInput):
+    user = await _find_user_by_email(input.email)
+    if not user or not bcrypt.verify(input.password, user.get("passwordHash", "")):
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    token = create_access_token(user["_id"])
+    resp = JSONResponse(UserPublic(id=user["_id"], email=user["email"], createdAt=user["createdAt"]).dict())
+    resp.set_cookie(
+        key="access_token",
+        value=f"Bearer {token}",
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return resp
 
-# Sessions CRUD
+@api_router.post("/auth/logout")
+async def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("access_token", path="/")
+    return resp
+
+@api_router.get("/auth/me", response_model=UserPublic)
+async def me(user: UserPublic = Depends(get_current_user)):
+    return user
+
+# Sessions CRUD (auth required)
 @api_router.get("/sessions", response_model=List[SessionModel])
-async def list_sessions():
-    docs = await db.sessions.find().sort("updatedAt", -1).to_list(100)
+async def list_sessions(user: UserPublic = Depends(get_current_user)):
+    docs = await db.sessions.find({"ownerId": user.id}).sort("updatedAt", -1).to_list(100)
     return [_doc_to_session(d) for d in docs]
 
 @api_router.post("/sessions", response_model=SessionModel, status_code=201)
-async def create_session(payload: SessionCreate = Body(default_factory=SessionCreate)):
+async def create_session(payload: SessionCreate = Body(default_factory=SessionCreate), user: UserPublic = Depends(get_current_user)):
     s = SessionModel(
+        ownerId=user.id,
         title=payload.title or "Nuova chat",
         model=payload.model or "gpt-4o-mini",
     )
@@ -141,8 +234,8 @@ async def create_session(payload: SessionCreate = Body(default_factory=SessionCr
     return s
 
 @api_router.put("/sessions/{session_id}", response_model=SessionModel)
-async def update_session(session_id: str = Path(...), payload: SessionUpdate = Body(default_factory=SessionUpdate)):
-    doc = await db.sessions.find_one({"_id": session_id})
+async def update_session(session_id: str = Path(...), payload: SessionUpdate = Body(default_factory=SessionUpdate), user: UserPublic = Depends(get_current_user)):
+    doc = await db.sessions.find_one({"_id": session_id, "ownerId": user.id})
     if not doc:
         raise HTTPException(status_code=404, detail="Session not found")
     s = _doc_to_session(doc)
@@ -151,19 +244,23 @@ async def update_session(session_id: str = Path(...), payload: SessionUpdate = B
     if payload.model is not None:
         s.model = payload.model
     s.updatedAt = datetime.utcnow()
-    await db.sessions.update_one({"_id": s.id}, {"$set": _session_to_doc(s)})
+    await db.sessions.update_one({"_id": s.id, "ownerId": user.id}, {"$set": _session_to_doc(s)})
     return s
 
 @api_router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str = Path(...)):
-    await db.messages.delete_many({"sessionId": session_id})
-    await db.sessions.delete_one({"_id": session_id})
+async def delete_session(session_id: str = Path(...), user: UserPublic = Depends(get_current_user)):
+    await db.messages.delete_many({"sessionId": session_id, "ownerId": user.id})
+    await db.sessions.delete_one({"_id": session_id, "ownerId": user.id})
     return
 
 # Messages
 @api_router.get("/sessions/{session_id}/messages", response_model=List[MessageModel])
-async def get_messages(session_id: str = Path(...)):
-    docs = await db.messages.find({"sessionId": session_id}).sort("createdAt", 1).to_list(1000)
+async def get_messages(session_id: str = Path(...), user: UserPublic = Depends(get_current_user)):
+    # ensure session belongs to user
+    sess = await db.sessions.find_one({"_id": session_id, "ownerId": user.id})
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    docs = await db.messages.find({"sessionId": session_id, "ownerId": user.id}).sort("createdAt", 1).to_list(1000)
     return [_doc_to_message(d) for d in docs]
 
 # --------- LLM integration helpers ---------
@@ -232,7 +329,7 @@ async def openai_chat_stream_delta(messages: List[dict], model: str, temperature
 
 # --------- SSE Chat (token-by-token) ---------
 @api_router.post("/chat/stream")
-async def chat_stream(input: ChatStreamInput, request: Request):
+async def chat_stream(input: ChatStreamInput, request: Request, user: UserPublic = Depends(get_current_user)):
     # Costruisci history
     in_msgs = []
     for m in input.messages:
@@ -241,14 +338,14 @@ async def chat_stream(input: ChatStreamInput, request: Request):
         else:
             in_msgs.append({"role": m.role, "content": m.content})
 
-    # Verifica sessione esistente
-    sess = await db.sessions.find_one({"_id": input.sessionId})
+    # Verifica sessione esistente e ownership
+    sess = await db.sessions.find_one({"_id": input.sessionId, "ownerId": user.id})
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Salva il messaggio utente (ultimo user)
     last_user_content = next((m["content"] for m in reversed(in_msgs) if m["role"] == "user"), "")
-    user_msg = MessageModel(sessionId=input.sessionId, role="user", content=last_user_content)
+    user_msg = MessageModel(ownerId=user.id, sessionId=input.sessionId, role="user", content=last_user_content)
     await db.messages.insert_one(_message_to_doc(user_msg))
 
     async def event_gen():
@@ -265,11 +362,9 @@ async def chat_stream(input: ChatStreamInput, request: Request):
                 if await request.is_disconnected():
                     break
                 full_answer += piece
-                # inviamo solo il delta (token/word) e il client lo appende
                 yield f"data: {{\"type\": \"chunk\", \"delta\": {json.dumps(piece)} }}\n\n"
 
-            # Fine: salva messaggio assistant completo
-            assistant_msg = MessageModel(sessionId=input.sessionId, role="assistant", content=full_answer)
+            assistant_msg = MessageModel(ownerId=user.id, sessionId=input.sessionId, role="assistant", content=full_answer)
             await db.messages.insert_one(_message_to_doc(assistant_msg))
             yield f"data: {{\"type\": \"end\", \"messageId\": \"{assistant_msg.id}\"}}\n\n"
         except Exception as e:
