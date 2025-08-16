@@ -36,7 +36,7 @@ export function AuthProvider({ children }) {
       setUser(res.user);
       return true;
     } catch (e) {
-      toast({ title: "Login fallito" });
+      toast({ title: e.message || "Login fallito" });
       return false;
     }
   }
@@ -48,7 +48,7 @@ export function AuthProvider({ children }) {
       setUser(res.user);
       return true;
     } catch (e) {
-      toast({ title: "Registrazione fallita" });
+      toast({ title: e.message || "Registrazione fallita" });
       return false;
     }
   }

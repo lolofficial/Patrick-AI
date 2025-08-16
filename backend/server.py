@@ -178,12 +178,29 @@ async def get_current_user(request: Request) -> UserPublic:
 async def root():
     return {"message": "Hello World"}
 
-# Auth endpoints
+# Auth endpoints (idempotent register)
 @api_router.post("/auth/register", response_model=AuthResponse)
 async def register(input: RegisterInput):
     existing = await _find_user_by_email(input.email)
     if existing:
-        raise HTTPException(status_code=400, detail="Email già registrata")
+        # Se esiste e password è corretta → login trasparente
+        if bcrypt.verify(input.password, existing.get("passwordHash", "")):
+            token = create_access_token(existing["_id"])
+            resp_data = AuthResponse(user=UserPublic(id=existing["_id"], email=existing["email"], createdAt=existing["createdAt"]), token=token)
+            resp = JSONResponse(jsonable_encoder(resp_data))
+            resp.set_cookie(
+                key="access_token",
+                value=f"Bearer {token}",
+                httponly=True,
+                samesite="lax",
+                secure=False,
+                path="/",
+                max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            )
+            return resp
+        # Altrimenti messaggio chiaro
+        raise HTTPException(status_code=409, detail="Email già registrata, password non corretta")
+
     uid = str(uuid.uuid4())
     user_doc = {
         "_id": uid,
@@ -195,7 +212,6 @@ async def register(input: RegisterInput):
     token = create_access_token(uid)
     resp_data = AuthResponse(user=UserPublic(id=uid, email=input.email, createdAt=user_doc["createdAt"]), token=token)
     resp = JSONResponse(jsonable_encoder(resp_data))
-    # set also cookie for same-site scenarios
     resp.set_cookie(
         key="access_token",
         value=f"Bearer {token}",
@@ -284,7 +300,6 @@ async def get_messages(session_id: str = Path(...), user: UserPublic = Depends(g
 
 # --------- LLM integration helpers ---------
 async def mock_llm_stream_delta(prompt: str) -> AsyncGenerator[str, None]:
-    """Yield piccoli delta (parole) come streaming mock."""
     canned = [
         "Certo! Ti aiuto volentieri. Ecco una spiegazione semplice e diretta.",
         "Ottima domanda. Possiamo affrontarla passo dopo passo.",
@@ -301,7 +316,6 @@ async def mock_llm_stream_delta(prompt: str) -> AsyncGenerator[str, None]:
         await asyncio.sleep(0.03)
 
 async def openai_chat_stream_delta(messages: List[dict], model: str, temperature: float = 0.3) -> AsyncGenerator[str, None]:
-    """Chiama OpenAI con stream=true e produce delta di testo (token/word)."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not configured")
@@ -349,7 +363,6 @@ async def openai_chat_stream_delta(messages: List[dict], model: str, temperature
 # --------- SSE Chat (token-by-token) ---------
 @api_router.post("/chat/stream")
 async def chat_stream(input: ChatStreamInput, request: Request, user: UserPublic = Depends(get_current_user)):
-    # Costruisci history
     in_msgs = []
     for m in input.messages:
         if isinstance(m, dict):
@@ -357,12 +370,10 @@ async def chat_stream(input: ChatStreamInput, request: Request, user: UserPublic
         else:
             in_msgs.append({"role": m.role, "content": m.content})
 
-    # Verifica sessione esistente e ownership
     sess = await db.sessions.find_one({"_id": input.sessionId, "ownerId": user.id})
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Salva il messaggio utente (ultimo user)
     last_user_content = next((m["content"] for m in reversed(in_msgs) if m["role"] == "user"), "")
     user_msg = MessageModel(ownerId=user.id, sessionId=input.sessionId, role="user", content=last_user_content)
     await db.messages.insert_one(_message_to_doc(user_msg))
@@ -395,7 +406,7 @@ async def chat_stream(input: ChatStreamInput, request: Request, user: UserPublic
 # Include router
 app.include_router(api_router)
 
-# CORS: se CORS_ORIGINS è "*", per richieste con credenziali usiamo localhost:3000 di default
+# CORS
 cors_env = os.environ.get("CORS_ORIGINS", "*")
 origins = [o.strip() for o in cors_env.split(",") if o.strip()] if cors_env else ["http://localhost:3000"]
 if origins == ["*"]:

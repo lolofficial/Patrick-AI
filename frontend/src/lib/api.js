@@ -13,9 +13,16 @@ function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+async function parseOrText(res) {
+  try { return await res.json(); } catch { return { detail: res.statusText }; }
+}
+
 export async function apiGet(path) {
   const res = await fetch(`${API_BASE}${path}`, { ...withCreds, headers: { ...authHeaders() } });
-  if (!res.ok) throw new Error(`GET ${path} ${res.status}`);
+  if (!res.ok) {
+    const data = await parseOrText(res);
+    throw new Error(data.detail || `GET ${path} ${res.status}`);
+  }
   return res.json();
 }
 
@@ -26,17 +33,22 @@ export async function apiJson(path, method = 'POST', body) {
     body: JSON.stringify(body || {}),
     ...withCreds,
   });
-  if (!res.ok) throw new Error(`${method} ${path} ${res.status}`);
+  if (!res.ok) {
+    const data = await parseOrText(res);
+    throw new Error(data.detail || `${method} ${path} ${res.status}`);
+  }
   return res.json();
 }
 
 export async function apiDelete(path) {
   const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', ...withCreds, headers: { ...authHeaders() } });
-  if (!res.ok) throw new Error(`DELETE ${path} ${res.status}`);
+  if (!res.ok) {
+    const data = await parseOrText(res);
+    throw new Error(data.detail || `DELETE ${path} ${res.status}`);
+  }
   return true;
 }
 
-// SSE POST streaming via fetch body
 export async function* apiSSE(path, body, { signal } = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
@@ -45,7 +57,10 @@ export async function* apiSSE(path, body, { signal } = {}) {
     signal,
     ...withCreds,
   });
-  if (!res.ok || !res.body) throw new Error(`SSE ${path} ${res.status}`);
+  if (!res.ok || !res.body) {
+    const data = await parseOrText(res);
+    throw new Error(data.detail || `SSE ${path} ${res.status}`);
+  }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
