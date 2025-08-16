@@ -240,8 +240,8 @@ export default function Chat() {
             <Button variant="secondary" size="sm" onClick={regenerateLast} disabled={!messages.length || isStreaming}>
               <RefreshCw className="h-4 w-4 mr-1" /> Rigenera
             </Button>
-            <Button variant="ghost" size="icon">
-              <MoreVertical className="h-5 w-5" />
+            <Button variant="ghost" size="sm" onClick={async () => { await logout(); navigate('/auth', { replace: true }); }}>
+              <LogOut className="h-4 w-4 mr-1" /> Esci
             </Button>
           </div>
         </div>
