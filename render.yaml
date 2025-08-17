@@ -20,7 +20,7 @@ services:
         # will be updated automatically after frontend deploy
         value: https://REPLACE_WITH_FRONTEND
 
-  - type: static_site
+  - type: static
     name: chatgpt-frontend
     env: static
     rootDir: frontend
