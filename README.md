@@ -5,6 +5,24 @@ Questo repository contiene una replica stile ChatGPT, pronta a girare in locale 
 - Backend: FastAPI (streaming SSE), integrazione OpenAI (token‑by‑token)
 - Database: MongoDB (sessioni e messaggi persistiti)
 
+## Deploy nel modo più facile (1 provider, senza terminale)
+
+Usa Render Blueprint (un click per frontend + backend):
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+
+Passi:
+1. Carica il repo su GitHub.
+2. Vai su https://render.com/deploy e seleziona il tuo repo: il file `render.yaml` creerà automaticamente:
+   - Web Service: backend FastAPI
+   - Static Site: frontend React
+3. Imposta le variabili:
+   - Nel backend: `MONGO_URL` (Atlas), `DB_NAME` (es. chatdb), `OPENAI_API_KEY`, `SECRET_KEY` (già generata), `CORS_ORIGINS` = URL frontend dopo deploy
+   - Nel frontend: `REACT_APP_BACKEND_URL` = URL del backend dopo deploy
+4. Fai Deploy. Otterrai 2 URL pubblici (frontend e backend). Apri il frontend su iPhone/iPad/ovunque.
+
+Nota: dopo il primo deploy, aggiorna `CORS_ORIGINS` del backend con l’URL del frontend e ridistribuisci.
+
 ## Caratteristiche
 - UI ChatGPT‑like con sidebar conversazioni, titolo editabile, selettore modello
 - Streaming token‑by‑token dalle API OpenAI (fallback mock automatico)
@@ -13,27 +31,18 @@ Questo repository contiene una replica stile ChatGPT, pronta a girare in locale 
 - Isolamento per utente: ogni utente vede solo le proprie chat
 - CRUD sessioni, storico messaggi, copia testo, stop/rigenera, cambio password
 
-## Requisiti
-- Node + Yarn (già gestiti nell’ambiente)
+## Requisiti locali (opzionale)
+- Node + Yarn
 - Python 3.11+
-- MongoDB accessibile (usa MONGO_URL nel backend/.env)
+- MongoDB (Atlas consigliato anche in locale)
 
-## Configurazione
-- frontend/.env: REACT_APP_BACKEND_URL (già impostato dall’ambiente)
-- backend/.env: 
-  - MONGO_URL="mongodb://localhost:27017"
-  - DB_NAME="test_database"
-  - OPENAI_API_KEY="sk-..." (opzionale; se assente usa mock)
-  - SECRET_KEY="cambia-questa-chiave"
+## Configurazione env
+- frontend/.env: REACT_APP_BACKEND_URL
+- backend/.env: MONGO_URL, DB_NAME, OPENAI_API_KEY, SECRET_KEY, CORS_ORIGINS
 
-Nota: Non modificare URL/porte nei .env. Tutte le rotte backend hanno prefisso /api.
-
-## Avvio
-I servizi sono gestiti da supervisor (hot reload attivo):
-- Riavvia frontend/backend: `sudo supervisorctl restart frontend` / `backend` / `all`
-
-Accedi al frontend:
-- http://localhost:3000/chat
+## Avvio locale (già gestito qui dall’ambiente)
+- Supervisor: `sudo supervisorctl restart frontend` / `backend` / `all`
+- Frontend: http://localhost:3000/chat
 
 ## API principali (prefisso /api)
 - Auth: POST /auth/register, POST /auth/login, POST /auth/logout, GET /auth/me, POST /auth/change-password
@@ -42,11 +51,4 @@ Accedi al frontend:
 - Chat streaming: POST /chat/stream (SSE)
 
 ## Note su OpenAI
-- Se OPENAI_API_KEY è presente, lo streaming usa OpenAI (gpt‑4o / gpt‑4o‑mini). In caso di quota/errore, si può abilitare fallback.
-
-## Testing
-- Backend: testato con agent dedicato (CRUD + SSE)
-- Frontend: test manuali con screenshot; è possibile aggiungere test automatici su richiesta
-
-## Licenza
-Uso interno per MVP. Personalizza a piacere per distribuzione privata.
+- Se `OPENAI_API_KEY` è presente, lo streaming usa OpenAI (gpt‑4o / gpt‑4o‑mini). In caso di quota/errore, è possibile prevedere fallback.
