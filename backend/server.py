@@ -192,3 +192,10 @@ async def change_password(input: ChangePasswordInput, user: UserPublic = Depends
     return {"ok": True}
 
 # ... rest of file unchanged ...
+pp = FastAPI()
+
+api_router = APIRouter(prefix="/api")
+
+@api_router.get("/") def hello(): return {"message": "Hello World"}
+
+app.include_router(api_router)
