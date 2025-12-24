@@ -1,14 +1,6 @@
-from fastapi import FastAPI, APIRouter from starlette.middleware.cors import CORSMiddleware import os
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends from fastapi.responses 
+import StreamingResponse from starlette.middleware.cors import CORSMiddleware from pydantic 
+import BaseModel, EmailStr from typing import List, Dict, Optional, AsyncGenerator from datetime
+import datetime, timedelta from jose import jwt, JWTError import os, uuid, asyncio, json
 
-app = FastAPI()
-
-api_router = APIRouter(prefix="/api")
-
-@api_router.get("/") async def hello(): return {"message": "Hello World"}
-
-app.include_router(api_router)
-
-CORS minimale: per il test non usiamo credenziali
-cors_env = os.environ.get("CORS_ORIGINS", "") origins = [o.strip() for o in cors_env.split(",") if o.strip()] if not origins: origins = ["*"]
-
-app.add_middleware( CORSMiddleware, allow_origins=origins, allow_credentials=False, allow_methods=[""], allow_headers=[""], )
+app = FastAPI() api = APIRouter(prefix="/api")
